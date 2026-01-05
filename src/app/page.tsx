@@ -53,6 +53,18 @@ export interface AnalysisResult {
     }>;
     fixStrategy: string;
   }>;
+  strengths: Array<{
+    code: string;
+    title: string;
+    description: string;
+    pillar: string;
+    impact: number;
+    evidence: Array<{
+      url: string;
+      snippet: string;
+      location: string;
+    }>;
+  }>;
 }
 
 export interface AnalysisStep {
@@ -83,8 +95,11 @@ export default function Home() {
     ));
   };
 
-  const startAnalysis = async (inputUrl: string) => {
+  const [email, setEmail] = useState('');
+
+  const startAnalysis = async (inputUrl: string, userEmail?: string) => {
     setUrl(inputUrl);
+    if (userEmail) setEmail(userEmail);
     setError(null);
     setCurrentScreen('analyzing');
 
@@ -189,6 +204,11 @@ export default function Home() {
         <RewriteScreen
           blocker={selectedBlocker}
           siteName={new URL(analysisResult.url).hostname}
+          siteInfo={{
+            description: analysisResult.understanding.oneLiner,
+            category: analysisResult.understanding.category,
+            audience: analysisResult.understanding.audience,
+          }}
           onBack={showDashboard}
         />
       )}

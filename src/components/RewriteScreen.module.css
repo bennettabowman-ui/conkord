@@ -247,6 +247,99 @@
   color: var(--accent-primary);
 }
 
+/* Schema Output Styles */
+.schemaOutput {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 1200px;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 0 24px;
+}
+
+.schemaCard {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.schemaHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.schemaTitle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent-info);
+}
+
+.schemaCode {
+  padding: 24px;
+  font-family: 'Fira Code', 'Monaco', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  overflow-x: auto;
+  white-space: pre;
+  margin: 0;
+}
+
+.instructionsCard {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+}
+
+.instructionsTitle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 20px;
+  color: var(--text-primary);
+}
+
+.instructionsContent {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+.instructionsContent p {
+  margin: 0 0 8px 0;
+}
+
+.instructionHeading {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 24px 0 12px 0;
+}
+
+.instructionHeading:first-child {
+  margin-top: 0;
+}
+
+.instructionSubheading {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent-primary);
+  margin: 16px 0 8px 0;
+}
+
 @media (max-width: 900px) {
   .patchDiff {
     grid-template-columns: 1fr;
@@ -255,5 +348,9 @@
   .diffSide.before {
     border-right: none;
     border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .schemaCode {
+    font-size: 11px;
   }
 }

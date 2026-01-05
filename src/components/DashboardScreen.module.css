@@ -314,6 +314,124 @@
   font-weight: 600;
 }
 
+.strengthsTitle {
+  color: var(--accent-primary);
+}
+
+.strengthsCount {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+.strengthsList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 1200px;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 0 24px;
+  margin-bottom: 40px;
+}
+
+.strengthCard {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 20px 24px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.strengthCard:hover {
+  border-color: rgba(34, 197, 94, 0.3);
+  background: var(--bg-tertiary);
+}
+
+.strengthCard.expanded {
+  border-color: #22c55e;
+  background: var(--bg-tertiary);
+}
+
+.strengthMain {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.strengthImpact {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.strengthImpact.impactHigh {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+.strengthImpact.impactMedium {
+  background: rgba(34, 197, 94, 0.12);
+  color: #4ade80;
+}
+
+.strengthImpact.impactLow {
+  background: rgba(34, 197, 94, 0.08);
+  color: #86efac;
+}
+
+.strengthContent {
+  flex: 1;
+}
+
+.strengthTitle {
+  font-weight: 600;
+  font-size: 15px;
+  margin-bottom: 4px;
+  color: #22c55e;
+}
+
+.strengthDescription {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.strengthMeta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+.strengthPillar {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  padding: 4px 10px;
+  border-radius: 4px;
+}
+
+.strengthArrow {
+  color: var(--text-muted);
+  transition: transform var(--transition-fast);
+}
+
+.strengthCard.expanded .strengthArrow {
+  transform: rotate(180deg);
+}
+
+.strengthExpanded {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-subtle);
+}
+
 .blockersList {
   display: flex;
   flex-direction: column;
@@ -540,6 +658,17 @@
   }
 
   .blockerMeta {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .strengthMain {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .strengthMeta {
     width: 100%;
     justify-content: space-between;
   }

@@ -62,15 +62,24 @@ export async function POST(request: NextRequest) {
       send({ type: 'step', step: 3, message: 'Building AI understanding' });
       const understanding = await generateUnderstanding(siteData, extractions);
 
-      // Step 4: Blockers
+      // Step 4: Blockers & Strengths
       send({ type: 'step', step: 4, message: 'Identifying blockers' });
-      const blockers = runBlockerChecks(siteData, extractions);
+
+      // Check llms.txt alignment first (needed for blocker/strength checks)
+      const llmsTxtAnalysis = analyzeLlmsTxt(crawlResult.llmsTxt ?? null, siteData, understanding);
+
+      const rawBlockers = runBlockerChecks(siteData, extractions, llmsTxtAnalysis);
+
+      // Enrich top blockers with site-specific GPT analysis
+      const blockers = await enrichBlockersWithGPT(rawBlockers.slice(0, 5), siteData, extractions);
+      // Add remaining blockers without enrichment
+      blockers.push(...rawBlockers.slice(5));
+
+      // Run strength checks (what's working well)
+      const strengths = runStrengthChecks(siteData, extractions, llmsTxtAnalysis);
 
       // Step 5: Scores
       send({ type: 'step', step: 5, message: 'Calculating score' });
-
-      // Check llms.txt alignment
-      const llmsTxtAnalysis = analyzeLlmsTxt(crawlResult.llmsTxt ?? null, siteData, understanding);
       const scores = calculateScores(blockers, llmsTxtAnalysis.modifier);
 
       const elapsed = (Date.now() - startTime) / 1000;
@@ -84,6 +93,7 @@ export async function POST(request: NextRequest) {
         scores,
         understanding,
         blockers,
+        strengths,
         llmsTxt: llmsTxtAnalysis,
       };
 
@@ -695,6 +705,103 @@ function buildSiteContentSummary(siteData: SiteData): string {
 }
 
 // ============================================
+// BLOCKER ENRICHMENT (GPT-powered site-specific analysis)
+// ============================================
+
+async function enrichBlockersWithGPT(
+  blockers: Blocker[],
+  siteData: SiteData,
+  _extractions: Extraction[]
+): Promise<Blocker[]> {
+  if (blockers.length === 0) return blockers;
+
+  const siteContent = buildSiteContentSummary(siteData);
+  const siteName = siteData.homepage?.meta?.title || 'this site';
+
+  const blockerSummary = blockers.map(b => `- ${b.code}: ${b.title}`).join('\n');
+
+  const prompt = `You are an AI recommendation expert analyzing ${siteName}. This site has the following issues that would hinder an LLM from confidently recommending them:
+
+${blockerSummary}
+
+Here is content from their website:
+---
+${siteContent.slice(0, 4000)}
+---
+
+For each blocker, provide a site-specific analysis with:
+1. A concrete example from their actual content showing the problem
+2. A specific rewrite or fix using their actual product/service
+
+Respond in this exact JSON format (no markdown):
+{
+  "enrichments": [
+    {
+      "code": "BLOCKER_CODE",
+      "siteSpecificIssue": "Specific analysis of how THIS site has this problem, citing actual content",
+      "concreteExample": "An actual quote or reference from their site that shows the problem",
+      "specificFix": "A specific rewrite using their actual product/brand"
+    }
+  ]
+}
+
+Be direct and specific. Reference their actual content.`;
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.4,
+        max_tokens: 1500,
+      }),
+    });
+
+    if (!response.ok) {
+      return blockers; // Return unenriched if API fails
+    }
+
+    const data = await response.json();
+    const aiResponse = data.choices[0]?.message?.content;
+
+    if (!aiResponse) return blockers;
+
+    const cleaned = aiResponse.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+
+    if (!parsed.enrichments || !Array.isArray(parsed.enrichments)) {
+      return blockers;
+    }
+
+    // Merge enrichments into blockers
+    const enrichedBlockers = blockers.map(blocker => {
+      const enrichment = parsed.enrichments.find((e: { code: string }) => e.code === blocker.code);
+      if (enrichment) {
+        return {
+          ...blocker,
+          description: enrichment.siteSpecificIssue || blocker.description,
+          evidence: [{
+            ...blocker.evidence[0],
+            snippet: enrichment.concreteExample || blocker.evidence[0].snippet,
+          }],
+          fixStrategy: enrichment.specificFix || blocker.fixStrategy,
+        };
+      }
+      return blocker;
+    });
+
+    return enrichedBlockers;
+  } catch {
+    return blockers; // Return unenriched on error
+  }
+}
+
+// ============================================
 // BLOCKERS
 // ============================================
 
@@ -724,7 +831,16 @@ interface Blocker {
   fixStrategy: string;
 }
 
-function runBlockerChecks(siteData: SiteData, extractions: Extraction[]): Blocker[] {
+interface Strength {
+  code: string;
+  title: string;
+  description: string;
+  pillar: string;
+  impact: number; // How much this helps (1-100)
+  evidence: Array<{ url: string; snippet: string; location: string }>;
+}
+
+function runBlockerChecks(siteData: SiteData, extractions: Extraction[], llmsTxtAnalysis: LlmsTxtAnalysis): Blocker[] {
   const blockers: Blocker[] = [];
 
   blockers.push(...checkLanguageClarity(siteData, extractions));
@@ -733,6 +849,9 @@ function runBlockerChecks(siteData: SiteData, extractions: Extraction[]): Blocke
   blockers.push(...checkProofPoints(siteData, extractions));
   blockers.push(...checkAudienceClarity(siteData, extractions));
   blockers.push(...checkSchemaMarkup(siteData, extractions));
+  blockers.push(...checkFactualDensity(siteData, extractions));
+  blockers.push(...checkProductDataSignals(siteData, extractions));
+  blockers.push(...checkLlmsTxt(siteData, llmsTxtAnalysis));
 
   blockers.sort((a, b) => b.severity - a.severity);
   return blockers;
@@ -926,7 +1045,7 @@ function checkProblemFraming(siteData: SiteData, extractions: Extraction[]): Blo
         snippet: homepage?.hero?.headline || 'Site content',
         location: 'Homepage and key pages',
       }],
-      fixStrategy: 'Lead with the problem your audience faces. "Tired of X? We help you Y." frames context for AI.',
+      fixStrategy: 'Use problem-first copy: "We solve [X problem] with [Y solution] for [Z industries/audience]." This structure directly matches how users ask AI for recommendations.',
     });
   }
 
@@ -1004,16 +1123,47 @@ function checkSpecificity(siteData: SiteData, extractions: Extraction[]): Blocke
   if (!hasOutcomes) {
     blockers.push({
       code: 'SPECIFICITY_NO_OUTCOMES',
-      title: 'No specific outcomes or results mentioned',
-      description: 'AI found no concrete numbers showing what results you deliver',
+      title: 'No quantified outcomes or metrics',
+      description: 'AI assigns higher confidence to sites with hard numbers. Your content describes what you do but not the measurable results. Competitors saying "saved $2M" will outrank "improved collaboration."',
       pillar: 'specificity',
-      severity: 78,
+      severity: 80,
       evidence: [{
         url: 'Site-wide',
         snippet: 'No specific metrics found',
         location: 'All content',
       }],
-      fixStrategy: 'Add specific outcomes: "Reduced processing time by 40%"',
+      fixStrategy: 'Translate soft outcomes into hard metrics: "improved collaboration" → "25% faster time-to-market", "better efficiency" → "saved 40 hours/month"',
+    });
+  }
+
+  // Check for proprietary jargon that doesn't map to standard industry terms
+  const proprietaryPatterns = [
+    /\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}\s+(?:Model|Framework|Method|Approach|System|Process|Engine|Platform)\b/g,
+    /\b(?:our|the)\s+(?:unique|proprietary)\s+/gi,
+    /\b\d+[A-Z]\s+(?:Model|Framework|Method|Approach)\b/gi, // "3D Model", "5P Framework"
+  ];
+
+  const proprietaryTerms: string[] = [];
+  for (const pattern of proprietaryPatterns) {
+    const matches = allContent.match(pattern);
+    if (matches) {
+      proprietaryTerms.push(...matches.slice(0, 3));
+    }
+  }
+
+  if (proprietaryTerms.length > 0) {
+    blockers.push({
+      code: 'SPECIFICITY_PROPRIETARY_JARGON',
+      title: 'Proprietary terminology creates AI friction',
+      description: `Your site uses branded frameworks (${proprietaryTerms.slice(0, 2).join(', ')}...) that AI cannot map to standard industry queries. Users ask for "legacy ERP migration" not "3D Engagement Model."`,
+      pillar: 'specificity',
+      severity: 65,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: proprietaryTerms.slice(0, 3).join(', '),
+        location: 'Content',
+      }],
+      fixStrategy: 'Map proprietary terms to industry-standard language. Keep your branding, but add explicit translations: "Our 3D Engagement Model (cloud migration + AI integration + change management)"',
     });
   }
 
@@ -1179,6 +1329,573 @@ function checkAudienceClarity(siteData: SiteData, extractions: Extraction[]): Bl
   }
 
   return blockers;
+}
+
+// Check for factual density - Google Shopping Graph prioritizes hard facts over marketing fluff
+function checkFactualDensity(siteData: SiteData, extractions: Extraction[]): Blocker[] {
+  const blockers: Blocker[] = [];
+  const allContent = extractions.flatMap(e =>
+    [e.hero?.headline, e.hero?.subheadline, ...e.paragraphs]
+  ).filter(Boolean).join(' ');
+
+  // Check for technical specifications and hard facts
+  const factPatterns = [
+    /\d+(?:\.\d+)?\s*(?:GB|MB|TB|KB|ms|seconds?|minutes?|hours?|days?|weeks?|months?|years?)/gi,
+    /\d+(?:\.\d+)?\s*(?:x|X)\s*(?:faster|slower|better|more)/gi,
+    /\d+(?:,\d{3})*\+?\s*(?:users?|customers?|clients?|companies|teams?|downloads?)/gi,
+    /\$\d+(?:,\d{3})*(?:\.\d{2})?/g, // Price mentions
+    /\d+%/g, // Percentages
+    /\b(?:ISO|SOC|GDPR|HIPAA|PCI|FedRAMP)\s*\d*/gi, // Compliance certifications
+    /v?\d+\.\d+(?:\.\d+)?/g, // Version numbers
+  ];
+
+  let factCount = 0;
+  for (const pattern of factPatterns) {
+    const matches = allContent.match(pattern);
+    if (matches) factCount += matches.length;
+  }
+
+  // Calculate words in content
+  const wordCount = allContent.split(/\s+/).length;
+  const factDensity = (factCount / wordCount) * 100;
+
+  // Low factual density - too much fluff
+  if (factDensity < 1 && wordCount > 200) {
+    blockers.push({
+      code: 'SPECIFICITY_LOW_FACT_DENSITY',
+      title: 'Low factual density in content',
+      description: 'AI prioritizes pages with hard facts over marketing language. Your content has few specific numbers, specs, or verifiable claims. The Google Shopping Graph weighs "dual-density foam sole that reduces impact by 20%" higher than "very comfortable shoes."',
+      pillar: 'specificity',
+      severity: 72,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: `Found ${factCount} factual data points in ${wordCount} words (${factDensity.toFixed(1)}% density)`,
+        location: 'Content analysis',
+      }],
+      fixStrategy: 'Replace vague claims with specific facts: "fast delivery" → "2-day shipping", "affordable" → "starts at $29/mo", "reliable" → "99.9% uptime SLA"',
+    });
+  }
+
+  // Check for vague comparative claims without specifics
+  const vagueComparatives = [
+    /\b(?:better|faster|easier|smarter|stronger|more efficient)\s+than\s+(?:the\s+)?(?:competition|competitors|others|alternatives)\b/gi,
+    /\b(?:best|leading|top|premier|#1|number one)\s+(?:in\s+(?:the\s+)?(?:industry|market|class))/gi,
+  ];
+
+  const vagueMatches: string[] = [];
+  for (const pattern of vagueComparatives) {
+    const matches = allContent.match(pattern);
+    if (matches) vagueMatches.push(...matches);
+  }
+
+  if (vagueMatches.length > 0) {
+    blockers.push({
+      code: 'SPECIFICITY_VAGUE_COMPARATIVES',
+      title: 'Unsubstantiated comparative claims',
+      description: `Claims like "${vagueMatches[0]}" without data are ignored by AI. LLMs need verifiable facts, not self-proclaimed rankings.`,
+      pillar: 'specificity',
+      severity: 58,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: vagueMatches.slice(0, 2).join(', '),
+        location: 'Content',
+      }],
+      fixStrategy: 'Back up comparatives with data: "faster than competitors" → "processes 10,000 requests/sec vs industry average of 2,000"',
+    });
+  }
+
+  return blockers;
+}
+
+// Check for product data signals that feed into Google Shopping Graph
+function checkProductDataSignals(siteData: SiteData, extractions: Extraction[]): Blocker[] {
+  const blockers: Blocker[] = [];
+  const allContent = extractions.flatMap(e =>
+    [e.hero?.headline, e.hero?.subheadline, ...e.paragraphs, ...e.headings.map(h => h.text)]
+  ).filter(Boolean).join(' ').toLowerCase();
+
+  // Check for Product schema (important for Shopping Graph)
+  const hasProductSchema = extractions.some(e => e.schema.hasProduct);
+
+  // Check for pricing transparency
+  const hasPricing = extractions.some(e => e.pageType === 'pricing') ||
+    /\$\d+|\bfree\s+(?:trial|tier|plan)\b|\bpricing\b|\bplans?\s+(?:start|from)\b/i.test(allContent);
+
+  // Check for product attributes that Shopping Graph values
+  const productAttributes = {
+    compatibility: /\b(?:compatible with|works with|integrates with|supports?)\s+[A-Z]/i.test(allContent),
+    specifications: /\b(?:specifications?|specs|dimensions?|weight|size|capacity|resolution)\b/i.test(allContent),
+    materials: /\b(?:made (?:of|from|with)|material|fabric|aluminum|steel|leather|cotton|wood)\b/i.test(allContent),
+    availability: /\b(?:in stock|available|ships? (?:in|within)|delivery|shipping)\b/i.test(allContent),
+  };
+
+  const missingAttributes = Object.entries(productAttributes)
+    .filter(([, has]) => !has)
+    .map(([attr]) => attr);
+
+  // For product-oriented sites without Product schema
+  if (!hasProductSchema && hasPricing) {
+    blockers.push({
+      code: 'SPECIFICITY_NO_PRODUCT_SCHEMA',
+      title: 'No Product/SoftwareApplication schema',
+      description: 'You have pricing but no Product schema. The Google Shopping Graph relies on structured product data to understand what you sell and recommend it accurately.',
+      pillar: 'specificity',
+      severity: 70,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: 'Pricing page detected but no Product schema found',
+        location: 'Structured data',
+      }],
+      fixStrategy: 'Add Product or SoftwareApplication schema with name, description, offers (price), and category.',
+    });
+  }
+
+  // Check for missing key product attributes
+  if (hasPricing && missingAttributes.length >= 3) {
+    blockers.push({
+      code: 'SPECIFICITY_MISSING_ATTRIBUTES',
+      title: 'Missing product attributes for AI parsing',
+      description: `AI systems like the Google Shopping Graph look for specific attributes (${missingAttributes.slice(0, 2).join(', ')}...) to confidently recommend products. Your site is light on these details.`,
+      pillar: 'specificity',
+      severity: 55,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: `Missing: ${missingAttributes.join(', ')}`,
+        location: 'Product information',
+      }],
+      fixStrategy: 'Add explicit product attributes: compatibility, specs, availability. Example: "Compatible with Slack, Jira, and GitHub" or "Deploys in under 5 minutes"',
+    });
+  }
+
+  // Check for freshness signals (important for Shopping Graph's 2B updates/hour)
+  const hasFreshnessSignals =
+    /\b(?:updated|new|latest|recent|\d{4}|v\d+\.\d+|version\s+\d+)\b/i.test(allContent) ||
+    /\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}\b/i.test(allContent);
+
+  if (!hasFreshnessSignals && hasPricing) {
+    blockers.push({
+      code: 'SPECIFICITY_NO_FRESHNESS',
+      title: 'No freshness signals in content',
+      description: 'The Shopping Graph refreshes 2B times/hour and prioritizes current information. Your content has no dates, version numbers, or "updated" markers that signal freshness.',
+      pillar: 'specificity',
+      severity: 50,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: 'No dates, version numbers, or update markers found',
+        location: 'Content',
+      }],
+      fixStrategy: 'Add freshness markers: "Updated January 2025", "v2.5 released", "Latest pricing". Keep key pages updated quarterly.',
+    });
+  }
+
+  return blockers;
+}
+
+// Check for llms.txt presence and quality
+function checkLlmsTxt(siteData: SiteData, llmsTxtAnalysis: LlmsTxtAnalysis): Blocker[] {
+  const blockers: Blocker[] = [];
+
+  if (!llmsTxtAnalysis.present) {
+    blockers.push({
+      code: 'CLARITY_NO_LLMS_TXT',
+      title: 'No llms.txt file found',
+      description: 'llms.txt is an emerging standard that tells AI systems exactly how to understand and represent your product. Without it, AI must infer everything from your marketing copy.',
+      pillar: 'clarity',
+      severity: 70,
+      evidence: [{
+        url: siteData.homepage?.url ? `${siteData.homepage.url}/llms.txt` : '/llms.txt',
+        snippet: 'File not found at /llms.txt',
+        location: 'Root directory',
+      }],
+      fixStrategy: 'Create a llms.txt file at your domain root with: product name, one-line description, key features, target audience, and what NOT to say about you.',
+    });
+  } else if (llmsTxtAnalysis.aligned === false) {
+    blockers.push({
+      code: 'CLARITY_LLMS_TXT_MISALIGNED',
+      title: 'llms.txt content is misaligned',
+      description: 'Your llms.txt file exists but contains marketing fluff or doesn\'t align with your actual product. This can confuse AI systems.',
+      pillar: 'clarity',
+      severity: 55,
+      evidence: [{
+        url: siteData.homepage?.url ? `${siteData.homepage.url}/llms.txt` : '/llms.txt',
+        snippet: llmsTxtAnalysis.notes.join('; '),
+        location: 'llms.txt',
+      }],
+      fixStrategy: 'Rewrite your llms.txt to be factual and concise. Avoid buzzwords. Focus on: what you are, who it\'s for, key capabilities, and boundaries (what you\'re NOT).',
+    });
+  }
+
+  return blockers;
+}
+
+// ============================================
+// STRENGTHS (What's working well)
+// ============================================
+
+function runStrengthChecks(siteData: SiteData, extractions: Extraction[], llmsTxtAnalysis: LlmsTxtAnalysis): Strength[] {
+  const strengths: Strength[] = [];
+
+  const allContent = extractions.flatMap(e =>
+    [e.hero?.headline, e.hero?.subheadline, ...e.paragraphs, ...e.headings.map(h => h.text)]
+  ).filter(Boolean).join(' ');
+
+  // Check for schema markup - positive signals
+  const hasAnySchema = extractions.some(e => e.schema.types.length > 0);
+  const hasOrganization = extractions.some(e => e.schema.hasOrganization);
+  const hasReview = extractions.some(e => e.schema.hasReview);
+  const hasFAQ = extractions.some(e => e.schema.hasFAQ);
+
+  if (hasAnySchema) {
+    const schemaTypes = [...new Set(extractions.flatMap(e => e.schema.types))];
+    strengths.push({
+      code: 'STRENGTH_HAS_SCHEMA',
+      title: 'Structured data (schema) present',
+      description: `AI can parse your site's structured data directly. Found: ${schemaTypes.slice(0, 3).join(', ')}${schemaTypes.length > 3 ? '...' : ''}`,
+      pillar: 'specificity',
+      impact: 75,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: `Schema types: ${schemaTypes.join(', ')}`,
+        location: 'JSON-LD markup',
+      }],
+    });
+  }
+
+  if (hasOrganization) {
+    strengths.push({
+      code: 'STRENGTH_ORG_SCHEMA',
+      title: 'Organization schema implemented',
+      description: 'AI can confidently cite your company name, description, and contact info.',
+      pillar: 'specificity',
+      impact: 65,
+      evidence: [{
+        url: siteData.homepage?.url || 'Homepage',
+        snippet: 'Organization schema detected',
+        location: 'Homepage',
+      }],
+    });
+  }
+
+  if (hasReview) {
+    strengths.push({
+      code: 'STRENGTH_REVIEW_SCHEMA',
+      title: 'Review/rating schema present',
+      description: 'Your social proof is machine-readable. AI can quote ratings and reviews directly.',
+      pillar: 'proof',
+      impact: 80,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: 'Review or AggregateRating schema detected',
+        location: 'Structured data',
+      }],
+    });
+  }
+
+  if (hasFAQ) {
+    strengths.push({
+      code: 'STRENGTH_FAQ_SCHEMA',
+      title: 'FAQ schema implemented',
+      description: 'Your Q&A content matches user queries directly. Great for "how do I..." questions.',
+      pillar: 'audience',
+      impact: 70,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: 'FAQPage schema detected',
+        location: 'FAQ content',
+      }],
+    });
+  }
+
+  // Check for quantified outcomes
+  const outcomePatterns = [
+    /\d+%\s*(?:increase|decrease|reduction|improvement|faster|growth)/gi,
+    /(?:saved?|reduced?|increased?|grew?)\s*(?:by\s*)?\$?[\d,]+/gi,
+    /\d+x\s*(?:faster|better|more|improvement)/gi,
+  ];
+
+  const outcomes: string[] = [];
+  for (const pattern of outcomePatterns) {
+    const matches = allContent.match(pattern);
+    if (matches) outcomes.push(...matches.slice(0, 3));
+  }
+
+  if (outcomes.length > 0) {
+    strengths.push({
+      code: 'STRENGTH_QUANTIFIED_OUTCOMES',
+      title: 'Quantified results on display',
+      description: 'Your site includes hard numbers AI can quote. This dramatically increases recommendation confidence.',
+      pillar: 'specificity',
+      impact: 85,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: outcomes.slice(0, 3).join(', '),
+        location: 'Content',
+      }],
+    });
+  }
+
+  // Check for third-party mentions
+  const thirdPartyPlatforms = [
+    { name: 'G2', patterns: ['g2.com', 'g2crowd'] },
+    { name: 'Capterra', patterns: ['capterra.com'] },
+    { name: 'TrustPilot', patterns: ['trustpilot.com'] },
+    { name: 'Product Hunt', patterns: ['producthunt.com'] },
+    { name: 'TechCrunch', patterns: ['techcrunch.com'] },
+    { name: 'Forbes', patterns: ['forbes.com'] },
+    { name: 'Gartner', patterns: ['gartner.com'] },
+    { name: 'Forrester', patterns: ['forrester.com'] },
+  ];
+
+  const mentionedPlatforms: string[] = [];
+  for (const platform of thirdPartyPlatforms) {
+    if (platform.patterns.some(p => allContent.toLowerCase().includes(p))) {
+      mentionedPlatforms.push(platform.name);
+    }
+  }
+
+  if (mentionedPlatforms.length > 0) {
+    strengths.push({
+      code: 'STRENGTH_THIRD_PARTY',
+      title: 'Third-party authority signals',
+      description: `Found references to credible external sources: ${mentionedPlatforms.join(', ')}. AI trusts external validation.`,
+      pillar: 'proof',
+      impact: 82,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: `Mentions: ${mentionedPlatforms.join(', ')}`,
+        location: 'Content',
+      }],
+    });
+  }
+
+  // Check for clear definition statement
+  if (siteData.allDefinitions.length > 0) {
+    const bestDefinition = siteData.allDefinitions[0];
+    strengths.push({
+      code: 'STRENGTH_CLEAR_DEFINITION',
+      title: 'Clear product definition',
+      description: 'AI can find a statement explaining what you do. This is foundational for recommendations.',
+      pillar: 'clarity',
+      impact: 78,
+      evidence: [{
+        url: siteData.homepage?.url || 'Homepage',
+        snippet: bestDefinition.slice(0, 150) + (bestDefinition.length > 150 ? '...' : ''),
+        location: 'Definition statement',
+      }],
+    });
+  }
+
+  // Check for specific audience targeting
+  if (siteData.allAudienceStatements.length > 0) {
+    strengths.push({
+      code: 'STRENGTH_AUDIENCE_CLARITY',
+      title: 'Target audience is specified',
+      description: 'AI knows who your product is for. This helps match you to the right queries.',
+      pillar: 'audience',
+      impact: 72,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: siteData.allAudienceStatements.slice(0, 2).join('; '),
+        location: 'Audience statements',
+      }],
+    });
+  }
+
+  // Check for case studies
+  const caseStudyPatterns = [/case study/gi, /how we helped/gi, /success story/gi, /customer story/gi];
+  const hasCaseStudies = caseStudyPatterns.some(p => p.test(allContent));
+
+  if (hasCaseStudies) {
+    strengths.push({
+      code: 'STRENGTH_CASE_STUDIES',
+      title: 'Case studies present',
+      description: 'Real examples of your work give AI concrete stories to reference.',
+      pillar: 'proof',
+      impact: 80,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: 'Case study content detected',
+        location: 'Case studies',
+      }],
+    });
+  }
+
+  // Check for testimonials with attribution
+  const testimonialPattern = /"[^"]{30,500}"\s*[-–—]\s*[A-Z][a-z]+/g;
+  const testimonials = allContent.match(testimonialPattern);
+
+  if (testimonials && testimonials.length > 0) {
+    strengths.push({
+      code: 'STRENGTH_TESTIMONIALS',
+      title: 'Attributed client testimonials',
+      description: 'Real quotes from real people. AI can cite these as third-party validation.',
+      pillar: 'proof',
+      impact: 75,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: `Found ${testimonials.length} testimonial(s)`,
+        location: 'Testimonials',
+      }],
+    });
+  }
+
+  // Check for problem-first framing
+  const problemPatterns = [
+    /struggling with/i, /tired of/i, /frustrated by/i,
+    /challenge[sd]? (?:of|with|in)/i, /problem[s]? (?:of|with|in|like)/i,
+    /solve[sd]?\s+(?:the|your)/i, /fix(?:es|ed)?\s+(?:the|your)/i,
+  ];
+  const hasProblemFraming = problemPatterns.some(p => p.test(allContent));
+
+  if (hasProblemFraming) {
+    strengths.push({
+      code: 'STRENGTH_PROBLEM_FRAMING',
+      title: 'Problem-first messaging',
+      description: 'Your copy addresses user problems, which directly maps to how people ask AI for solutions.',
+      pillar: 'clarity',
+      impact: 70,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: 'Problem-addressing language detected',
+        location: 'Content',
+      }],
+    });
+  }
+
+  // Check for FAQ content
+  if (siteData.allFAQs.length >= 3) {
+    strengths.push({
+      code: 'STRENGTH_FAQ_CONTENT',
+      title: 'Rich FAQ content',
+      description: `${siteData.allFAQs.length} Q&A pairs found. This matches how users query AI directly.`,
+      pillar: 'audience',
+      impact: 68,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: siteData.allFAQs[0]?.question || 'FAQ content',
+        location: 'FAQ section',
+      }],
+    });
+  }
+
+  // Check for high factual density (Google Shopping Graph loves this)
+  const factPatterns = [
+    /\d+(?:\.\d+)?\s*(?:GB|MB|TB|KB|ms|seconds?|minutes?|hours?|days?|weeks?|months?|years?)/gi,
+    /\d+(?:\.\d+)?\s*(?:x|X)\s*(?:faster|slower|better|more)/gi,
+    /\d+(?:,\d{3})*\+?\s*(?:users?|customers?|clients?|companies|teams?|downloads?)/gi,
+    /\$\d+(?:,\d{3})*(?:\.\d{2})?/g,
+    /\d+%/g,
+    /\b(?:ISO|SOC|GDPR|HIPAA|PCI|FedRAMP)\s*\d*/gi,
+    /v?\d+\.\d+(?:\.\d+)?/g,
+  ];
+
+  let factCount = 0;
+  for (const pattern of factPatterns) {
+    const matches = allContent.match(pattern);
+    if (matches) factCount += matches.length;
+  }
+
+  const wordCount = allContent.split(/\s+/).length;
+  const factDensity = (factCount / wordCount) * 100;
+
+  if (factDensity >= 2 && factCount >= 5) {
+    strengths.push({
+      code: 'STRENGTH_HIGH_FACT_DENSITY',
+      title: 'High factual density',
+      description: 'Your content is rich with specific numbers, specs, and verifiable data. AI systems prioritize this over marketing fluff.',
+      pillar: 'specificity',
+      impact: 78,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: `${factCount} factual data points detected (${factDensity.toFixed(1)}% density)`,
+        location: 'Content analysis',
+      }],
+    });
+  }
+
+  // Check for Product schema (important for Shopping Graph)
+  const hasProductSchema = extractions.some(e => e.schema.hasProduct);
+  if (hasProductSchema) {
+    strengths.push({
+      code: 'STRENGTH_PRODUCT_SCHEMA',
+      title: 'Product/SoftwareApplication schema present',
+      description: 'Your product data is structured for the Google Shopping Graph and AI commerce recommendations.',
+      pillar: 'specificity',
+      impact: 76,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: 'Product or SoftwareApplication schema detected',
+        location: 'Structured data',
+      }],
+    });
+  }
+
+  // Check for freshness signals
+  const hasFreshnessSignals =
+    /\b(?:updated|new|latest|recent|\d{4}|v\d+\.\d+|version\s+\d+)\b/i.test(allContent) ||
+    /\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}\b/i.test(allContent);
+
+  if (hasFreshnessSignals) {
+    strengths.push({
+      code: 'STRENGTH_FRESHNESS_SIGNALS',
+      title: 'Content freshness signals',
+      description: 'Dates, version numbers, and update markers tell AI your information is current. The Shopping Graph refreshes 2B times/hour and favors fresh data.',
+      pillar: 'specificity',
+      impact: 62,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: 'Freshness indicators detected (dates, versions, updates)',
+        location: 'Content',
+      }],
+    });
+  }
+
+  // Check for product attributes (compatibility, specs, availability)
+  const productAttributes = {
+    compatibility: /\b(?:compatible with|works with|integrates with|supports?)\s+[A-Z]/i.test(allContent),
+    specifications: /\b(?:specifications?|specs|dimensions?|weight|size|capacity|resolution)\b/i.test(allContent),
+    availability: /\b(?:in stock|available|ships? (?:in|within)|delivery|shipping)\b/i.test(allContent),
+  };
+
+  const presentAttributes = Object.entries(productAttributes)
+    .filter(([, has]) => has)
+    .map(([attr]) => attr);
+
+  if (presentAttributes.length >= 2) {
+    strengths.push({
+      code: 'STRENGTH_PRODUCT_ATTRIBUTES',
+      title: 'Rich product attributes',
+      description: `Found key product signals: ${presentAttributes.join(', ')}. AI commerce systems use these for precise matching.`,
+      pillar: 'specificity',
+      impact: 65,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: `Attributes: ${presentAttributes.join(', ')}`,
+        location: 'Product information',
+      }],
+    });
+  }
+
+  // Check for llms.txt presence and alignment
+  if (llmsTxtAnalysis.present && llmsTxtAnalysis.aligned) {
+    strengths.push({
+      code: 'STRENGTH_LLMS_TXT',
+      title: 'llms.txt file present and aligned',
+      description: 'You have a well-structured llms.txt that tells AI systems exactly how to understand your product. This is an emerging best practice for GEO.',
+      pillar: 'clarity',
+      impact: 72,
+      evidence: [{
+        url: '/llms.txt',
+        snippet: llmsTxtAnalysis.notes.join('; '),
+        location: 'Root directory',
+      }],
+    });
+  }
+
+  // Sort by impact
+  strengths.sort((a, b) => b.impact - a.impact);
+
+  return strengths;
 }
 
 // ============================================

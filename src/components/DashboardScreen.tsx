@@ -13,6 +13,7 @@ interface DashboardScreenProps {
 
 export default function DashboardScreen({ result, onRewrite, onRescan, onNewSite }: DashboardScreenProps) {
   const [expandedBlocker, setExpandedBlocker] = useState<number | null>(null);
+  const [expandedStrength, setExpandedStrength] = useState<number | null>(null);
 
   const hostname = new URL(result.url).hostname;
   const firstLetter = hostname.charAt(0).toUpperCase();
@@ -35,6 +36,12 @@ export default function DashboardScreen({ result, onRewrite, onRescan, onNewSite
     if (severity >= 80) return styles.critical;
     if (severity >= 60) return styles.high;
     return styles.medium;
+  };
+
+  const getImpactClass = (impact: number) => {
+    if (impact >= 80) return styles.impactHigh;
+    if (impact >= 65) return styles.impactMedium;
+    return styles.impactLow;
   };
 
   const pillars = [
@@ -129,6 +136,57 @@ export default function DashboardScreen({ result, onRewrite, onRescan, onNewSite
               </div>
             ))}
           </div>
+
+          {result.strengths && result.strengths.length > 0 && (
+            <>
+              <div className={styles.sectionHeader}>
+                <h2 className={`${styles.sectionTitle} ${styles.strengthsTitle}`}>What's Working Well</h2>
+                <span className={`${styles.sectionCount} ${styles.strengthsCount}`}>{result.strengths.length} strengths found</span>
+              </div>
+
+              <div className={styles.strengthsList}>
+                {result.strengths.map((strength, index) => (
+                  <div
+                    key={strength.code}
+                    className={`${styles.strengthCard} ${expandedStrength === index ? styles.expanded : ''}`}
+                    onClick={() => setExpandedStrength(expandedStrength === index ? null : index)}
+                  >
+                    <div className={styles.strengthMain}>
+                      <div className={`${styles.strengthImpact} ${getImpactClass(strength.impact)}`}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <polyline points="20 6 9 17 4 12"></polyline>
+                        </svg>
+                      </div>
+                      <div className={styles.strengthContent}>
+                        <div className={styles.strengthTitle}>{strength.title}</div>
+                        <div className={styles.strengthDescription}>{strength.description}</div>
+                      </div>
+                      <div className={styles.strengthMeta}>
+                        <span className={styles.strengthPillar}>{strength.pillar}</span>
+                        <svg className={styles.strengthArrow} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                      </div>
+                    </div>
+
+                    {expandedStrength === index && (
+                      <div className={styles.strengthExpanded}>
+                        <div className={styles.evidenceSection}>
+                          <div className={styles.evidenceLabel}>Evidence</div>
+                          {strength.evidence.map((e, i) => (
+                            <div key={i} className={styles.evidenceItem}>
+                              <div className={styles.evidenceUrl}>{e.url}</div>
+                              <div className={styles.evidenceSnippet}>{e.snippet}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
 
           <div className={styles.sectionHeader}>
             <h2 className={styles.sectionTitle}>Selection Blockers</h2>
