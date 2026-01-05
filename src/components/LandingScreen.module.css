@@ -97,12 +97,25 @@
   margin-right: auto;
 }
 
-.inputWrapper {
+.form {
   display: flex;
+  flex-direction: column;
   gap: 12px;
   max-width: 520px;
   width: 100%;
-  margin: 0 auto 24px;
+  margin: 0 auto 16px;
+}
+
+.inputGroup {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+}
+
+.freeNote {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 24px;
 }
 
 .input {
@@ -180,7 +193,7 @@
 }
 
 @media (max-width: 600px) {
-  .inputWrapper {
+  .inputGroup {
     flex-direction: column;
   }
 }

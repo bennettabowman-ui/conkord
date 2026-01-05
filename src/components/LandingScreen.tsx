@@ -4,21 +4,24 @@ import { useState } from 'react';
 import styles from './LandingScreen.module.css';
 
 interface LandingScreenProps {
-  onAnalyze: (url: string) => void;
+  onAnalyze: (url: string, email: string) => void;
 }
 
 export default function LandingScreen({ onAnalyze }: LandingScreenProps) {
   const [url, setUrl] = useState('');
+  const [email, setEmail] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!url.trim()) return;
+    if (!url.trim() || !email.trim()) return;
 
     setIsLoading(true);
     const fullUrl = url.startsWith('http') ? url : `https://${url}`;
-    onAnalyze(fullUrl);
+    onAnalyze(fullUrl, email);
   };
+
+  const isValidEmail = email.includes('@') && email.includes('.');
 
   return (
     <div className={styles.screen}>
@@ -38,19 +41,35 @@ export default function LandingScreen({ onAnalyze }: LandingScreenProps) {
           Discover why AI hesitates to recommend your product—and get exact fixes to become the obvious choice.
         </p>
 
-        <form onSubmit={handleSubmit} className={styles.inputWrapper}>
-          <input
-            type="text"
-            className={styles.input}
-            placeholder="Enter your website URL"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            disabled={isLoading}
-          />
-          <button type="submit" className={styles.button} disabled={isLoading || !url.trim()}>
-            {isLoading ? 'Analyzing...' : 'Analyze'}
+        <form onSubmit={handleSubmit} className={styles.form}>
+          <div className={styles.inputGroup}>
+            <input
+              type="email"
+              className={styles.input}
+              placeholder="Your email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              disabled={isLoading}
+            />
+            <input
+              type="text"
+              className={styles.input}
+              placeholder="Your website URL"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              disabled={isLoading}
+            />
+          </div>
+          <button
+            type="submit"
+            className={styles.button}
+            disabled={isLoading || !url.trim() || !isValidEmail}
+          >
+            {isLoading ? 'Analyzing...' : 'Get Free Analysis'}
           </button>
         </form>
+
+        <p className={styles.freeNote}>First scan is free. No credit card required.</p>
 
         <div className={styles.features}>
           <div className={styles.feature}>

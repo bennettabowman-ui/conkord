@@ -1,10 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import LandingScreen from '@/components/LandingScreen';
 import AnalyzingScreen from '@/components/AnalyzingScreen';
 import DashboardScreen from '@/components/DashboardScreen';
 import RewriteScreen from '@/components/RewriteScreen';
+
+export interface UserState {
+  email: string;
+  hasUsedFreeScan: boolean;
+  isPro: boolean;
+}
 
 export interface AnalysisResult {
   success: boolean;

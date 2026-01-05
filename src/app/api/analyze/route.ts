@@ -68,7 +68,10 @@ export async function POST(request: NextRequest) {
 
       // Step 5: Scores
       send({ type: 'step', step: 5, message: 'Calculating score' });
-      const scores = calculateScores(blockers);
+
+      // Check llms.txt alignment
+      const llmsTxtAnalysis = analyzeLlmsTxt(crawlResult.llmsTxt ?? null, siteData, understanding);
+      const scores = calculateScores(blockers, llmsTxtAnalysis.modifier);
 
       const elapsed = (Date.now() - startTime) / 1000;
 
@@ -81,6 +84,7 @@ export async function POST(request: NextRequest) {
         scores,
         understanding,
         blockers,
+        llmsTxt: llmsTxtAnalysis,
       };
 
       send({ type: 'complete', result });
@@ -131,6 +135,17 @@ async function crawlSite(baseUrl: string) {
   crawled.add(origin);
   crawled.add(origin + '/');
 
+  // Check for llms.txt
+  let llmsTxt: string | null = null;
+  try {
+    const llmsResult = await fetchPage(origin + '/llms.txt');
+    if (llmsResult.success && llmsResult.html) {
+      llmsTxt = llmsResult.html;
+    }
+  } catch {
+    // No llms.txt, that's fine
+  }
+
   // Extract links from homepage
   const $ = cheerio.load(homepageResult.html!);
   const discoveredLinks = new Set<string>();
@@ -177,6 +192,7 @@ async function crawlSite(baseUrl: string) {
     origin,
     pages: results,
     crawledCount: results.length,
+    llmsTxt,
   };
 }
 
@@ -236,6 +252,93 @@ function sleep(ms: number) {
 // EXTRACTOR
 // ============================================
 
+interface SchemaData {
+  types: string[];
+  hasOrganization: boolean;
+  hasProduct: boolean;
+  hasReview: boolean;
+  hasFAQ: boolean;
+  hasHowTo: boolean;
+  raw: object[];
+}
+
+function extractSchema($: cheerio.CheerioAPI): SchemaData {
+  const schemaData: SchemaData = {
+    types: [],
+    hasOrganization: false,
+    hasProduct: false,
+    hasReview: false,
+    hasFAQ: false,
+    hasHowTo: false,
+    raw: [],
+  };
+
+  // Extract JSON-LD schema
+  $('script[type="application/ld+json"]').each((_, el) => {
+    try {
+      const content = $(el).html();
+      if (content) {
+        const parsed = JSON.parse(content);
+        const schemas = Array.isArray(parsed) ? parsed : [parsed];
+
+        for (const schema of schemas) {
+          if (schema['@type']) {
+            const types = Array.isArray(schema['@type']) ? schema['@type'] : [schema['@type']];
+            schemaData.types.push(...types);
+
+            for (const type of types) {
+              const typeLower = type.toLowerCase();
+              if (typeLower.includes('organization') || typeLower.includes('localbusiness')) {
+                schemaData.hasOrganization = true;
+              }
+              if (typeLower.includes('product') || typeLower.includes('softwareapplication')) {
+                schemaData.hasProduct = true;
+              }
+              if (typeLower.includes('review') || typeLower.includes('aggregaterating')) {
+                schemaData.hasReview = true;
+              }
+              if (typeLower.includes('faqpage') || typeLower.includes('question')) {
+                schemaData.hasFAQ = true;
+              }
+              if (typeLower.includes('howto')) {
+                schemaData.hasHowTo = true;
+              }
+            }
+          }
+
+          // Handle @graph structure
+          if (schema['@graph'] && Array.isArray(schema['@graph'])) {
+            for (const item of schema['@graph']) {
+              if (item['@type']) {
+                const types = Array.isArray(item['@type']) ? item['@type'] : [item['@type']];
+                schemaData.types.push(...types);
+
+                for (const type of types) {
+                  const typeLower = type.toLowerCase();
+                  if (typeLower.includes('organization')) schemaData.hasOrganization = true;
+                  if (typeLower.includes('product')) schemaData.hasProduct = true;
+                  if (typeLower.includes('review') || typeLower.includes('rating')) schemaData.hasReview = true;
+                  if (typeLower.includes('faq') || typeLower.includes('question')) schemaData.hasFAQ = true;
+                  if (typeLower.includes('howto')) schemaData.hasHowTo = true;
+                }
+              }
+            }
+          }
+
+          schemaData.raw.push(schema);
+        }
+      }
+    } catch {
+      // Invalid JSON-LD, skip
+    }
+  });
+
+  // Dedupe types
+  schemaData.types = [...new Set(schemaData.types)];
+
+  return schemaData;
+}
+
 interface Extraction {
   url: string;
   pageType: string;
@@ -249,11 +352,16 @@ interface Extraction {
   claims: string[];
   proofPoints: string[];
   faqs: Array<{ question: string; answer: string }>;
+  schema: SchemaData;
 }
 
 function extractPage(html: string, url: string, pageType: string): Extraction {
-  const $ = cheerio.load(html);
+  const $raw = cheerio.load(html);
 
+  // Extract schema markup before removing scripts
+  const schemaData = extractSchema($raw);
+
+  const $ = cheerio.load(html);
   $('script, style, noscript, iframe, nav, footer, header, aside').remove();
 
   const extraction: Extraction = {
@@ -272,6 +380,7 @@ function extractPage(html: string, url: string, pageType: string): Extraction {
     claims: [],
     proofPoints: [],
     faqs: [],
+    schema: schemaData,
   };
 
   // Extract headings
@@ -619,11 +728,106 @@ function runBlockerChecks(siteData: SiteData, extractions: Extraction[]): Blocke
   const blockers: Blocker[] = [];
 
   blockers.push(...checkLanguageClarity(siteData, extractions));
+  blockers.push(...checkProblemFraming(siteData, extractions));
   blockers.push(...checkSpecificity(siteData, extractions));
   blockers.push(...checkProofPoints(siteData, extractions));
   blockers.push(...checkAudienceClarity(siteData, extractions));
+  blockers.push(...checkSchemaMarkup(siteData, extractions));
 
   blockers.sort((a, b) => b.severity - a.severity);
+  return blockers;
+}
+
+// Check for schema markup - critical for AI structured data parsing
+function checkSchemaMarkup(siteData: SiteData, extractions: Extraction[]): Blocker[] {
+  const blockers: Blocker[] = [];
+
+  // Aggregate all schema data from all pages
+  const allSchemaTypes = new Set<string>();
+  let hasAnySchema = false;
+  let hasOrganization = false;
+  let hasReview = false;
+  let hasFAQ = false;
+
+  for (const extraction of extractions) {
+    if (extraction.schema.types.length > 0) {
+      hasAnySchema = true;
+      extraction.schema.types.forEach(t => allSchemaTypes.add(t));
+    }
+    if (extraction.schema.hasOrganization) hasOrganization = true;
+    if (extraction.schema.hasReview) hasReview = true;
+    if (extraction.schema.hasFAQ) hasFAQ = true;
+  }
+
+  // No schema at all - major issue
+  if (!hasAnySchema) {
+    blockers.push({
+      code: 'SPECIFICITY_NO_SCHEMA',
+      title: 'No structured data (schema markup) found',
+      description: 'AI systems prioritize structured data they can parse directly. Your site has no JSON-LD schema markup, forcing AI to guess what information means.',
+      pillar: 'specificity',
+      severity: 82,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: 'No JSON-LD schema detected on any page',
+        location: 'All pages',
+      }],
+      fixStrategy: 'Add JSON-LD schema markup. At minimum: Organization schema on homepage, and Product/Service schema for your offering.',
+    });
+    return blockers; // Return early, other checks don't apply
+  }
+
+  // Has schema but missing Organization
+  if (!hasOrganization) {
+    blockers.push({
+      code: 'SPECIFICITY_NO_ORG_SCHEMA',
+      title: 'Missing Organization schema',
+      description: 'AI cannot find structured data about who you are. Organization schema helps AI cite your company name, logo, and contact info confidently.',
+      pillar: 'specificity',
+      severity: 68,
+      evidence: [{
+        url: siteData.homepage?.url || 'Homepage',
+        snippet: `Found schema types: ${[...allSchemaTypes].join(', ') || 'none'}`,
+        location: 'Homepage',
+      }],
+      fixStrategy: 'Add Organization schema with name, description, logo, and contactPoint.',
+    });
+  }
+
+  // Has schema but no review/rating signals
+  if (!hasReview && siteData.allProofPoints.length > 0) {
+    blockers.push({
+      code: 'PROOF_NO_REVIEW_SCHEMA',
+      title: 'Testimonials exist but no Review schema',
+      description: 'You have social proof on your site, but AI cannot parse it as structured reviews. Adding Review/AggregateRating schema makes proof quotable.',
+      pillar: 'proof',
+      severity: 60,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: 'Proof points found but no Review schema',
+        location: 'Content',
+      }],
+      fixStrategy: 'Add AggregateRating or Review schema to make your testimonials machine-readable.',
+    });
+  }
+
+  // Has FAQ content but no FAQ schema
+  if (!hasFAQ && siteData.allFAQs.length > 0) {
+    blockers.push({
+      code: 'SPECIFICITY_NO_FAQ_SCHEMA',
+      title: 'FAQ content exists but no FAQPage schema',
+      description: 'Your site has Q&A content that could directly match user queries, but it\'s not in schema format. FAQPage schema dramatically improves AI matching.',
+      pillar: 'audience',
+      severity: 55,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: `Found ${siteData.allFAQs.length} FAQ items without schema`,
+        location: 'FAQ content',
+      }],
+      fixStrategy: 'Add FAQPage schema to your FAQ content. This directly maps to how users ask AI questions.',
+    });
+  }
+
   return blockers;
 }
 
@@ -668,6 +872,81 @@ function checkLanguageClarity(siteData: SiteData, extractions: Extraction[]): Bl
         location: 'Site-wide',
       }],
       fixStrategy: 'Add one crystal-clear sentence: "[Company] is a [type] that [does what] for [whom]."',
+    });
+  }
+
+  return blockers;
+}
+
+// Check if site frames problems before solutions (Gemini insight: LLMs expand queries into problems)
+function checkProblemFraming(siteData: SiteData, extractions: Extraction[]): Blocker[] {
+  const blockers: Blocker[] = [];
+  const homepage = siteData.homepage;
+
+  const allContent = extractions.flatMap(e =>
+    [e.hero?.headline, e.hero?.subheadline, ...e.paragraphs]
+  ).filter(Boolean).join(' ').toLowerCase();
+
+  // Problem-indicating patterns
+  const problemPatterns = [
+    /struggling with/i,
+    /tired of/i,
+    /frustrated by/i,
+    /challenge[sd]? (?:of|with|in)/i,
+    /problem[s]? (?:of|with|in|like)/i,
+    /pain point/i,
+    /(?:do you|are you) (?:having|facing|dealing)/i,
+    /(?:hard|difficult|tough) to/i,
+    /waste[sd]? (?:time|money|hours)/i,
+    /(?:stop|eliminate|end|fix|solve) (?:the|your)/i,
+    /what if you could/i,
+    /imagine (?:if|a world|being able)/i,
+  ];
+
+  const hasProblemFraming = problemPatterns.some(p => p.test(allContent));
+
+  // Solution-only patterns (describing what you do without the why)
+  const solutionOnlyPatterns = [
+    /we (?:provide|offer|deliver|build|create)/i,
+    /(?:our|the) (?:platform|solution|tool|software|product)/i,
+    /(?:leading|best|top|premier) (?:provider|solution|platform)/i,
+  ];
+
+  const hasSolutionOnly = solutionOnlyPatterns.some(p => p.test(allContent));
+
+  if (!hasProblemFraming && hasSolutionOnly) {
+    blockers.push({
+      code: 'CLARITY_NO_PROBLEM_FRAMING',
+      title: 'Describes solution without the problem',
+      description: 'AI expands user queries into problems. Your site only describes what you do, not what problem you solve.',
+      pillar: 'clarity',
+      severity: 78,
+      evidence: [{
+        url: homepage?.url || 'Homepage',
+        snippet: homepage?.hero?.headline || 'Site content',
+        location: 'Homepage and key pages',
+      }],
+      fixStrategy: 'Lead with the problem your audience faces. "Tired of X? We help you Y." frames context for AI.',
+    });
+  }
+
+  // Check for question-based framing (good for AI query matching)
+  const hasQuestions = /\?/.test(allContent) &&
+    /(do you|are you|have you|what if|why do|how do)/i.test(allContent);
+
+  if (!hasQuestions && !hasProblemFraming) {
+    blockers.push({
+      code: 'CLARITY_NO_QUERY_MATCHING',
+      title: 'No question-based framing',
+      description: 'AI matches user questions to content. Your site has no questions that mirror how users ask for recommendations.',
+      pillar: 'audience',
+      severity: 65,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: 'No user-facing questions found',
+        location: 'All content',
+      }],
+      fixStrategy: 'Add FAQ or question-based sections: "Looking for X?" or "Struggling with Y?"',
     });
   }
 
@@ -805,6 +1084,56 @@ function checkProofPoints(siteData: SiteData, extractions: Extraction[]): Blocke
     });
   }
 
+  // Check for third-party authority signals (links to external proof)
+  // NOTE: In v2, we should add API calls to G2, Capterra, Reddit to verify actual presence
+  const thirdPartyPlatforms = [
+    { name: 'G2', patterns: ['g2.com', 'g2crowd'] },
+    { name: 'Capterra', patterns: ['capterra.com'] },
+    { name: 'TrustPilot', patterns: ['trustpilot.com'] },
+    { name: 'Product Hunt', patterns: ['producthunt.com'] },
+    { name: 'Reddit', patterns: ['reddit.com', 'r/'] },
+    { name: 'GitHub', patterns: ['github.com'] },
+    { name: 'TechCrunch', patterns: ['techcrunch.com'] },
+    { name: 'Forbes', patterns: ['forbes.com'] },
+    { name: 'Gartner', patterns: ['gartner.com'] },
+    { name: 'Forrester', patterns: ['forrester.com'] },
+  ];
+
+  const mentionedPlatforms: string[] = [];
+  for (const platform of thirdPartyPlatforms) {
+    if (platform.patterns.some(p => allContent.toLowerCase().includes(p))) {
+      mentionedPlatforms.push(platform.name);
+    }
+  }
+
+  // Check for "as seen on" / "featured in" patterns
+  const asSeenOnPatterns = [
+    /as (?:seen|featured) (?:on|in)/i,
+    /featured (?:by|in)/i,
+    /recognized by/i,
+    /awarded by/i,
+    /rated .* on g2/i,
+    /\d+[\+]?\s*reviews? on/i,
+  ];
+
+  const hasAsSeenOn = asSeenOnPatterns.some(p => p.test(allContent));
+
+  if (mentionedPlatforms.length === 0 && !hasAsSeenOn) {
+    blockers.push({
+      code: 'PROOF_NO_THIRD_PARTY',
+      title: 'No third-party authority signals',
+      description: 'AI prioritizes external validation over self-reported claims. Your site has no references to review platforms, press coverage, or community discussions.',
+      pillar: 'proof',
+      severity: 72,
+      evidence: [{
+        url: 'Site-wide',
+        snippet: 'No links or mentions of G2, Capterra, press, or community platforms',
+        location: 'All pages',
+      }],
+      fixStrategy: 'Add "As featured in" section, link to your G2/Capterra profiles, or mention press coverage. External proof > self-reported claims.',
+    });
+  }
+
   return blockers;
 }
 
@@ -866,10 +1195,84 @@ interface Scores {
   };
 }
 
-function calculateScores(blockers: Blocker[]): Scores {
+interface LlmsTxtAnalysis {
+  present: boolean;
+  aligned: boolean | null;
+  modifier: number;
+  notes: string[];
+}
+
+function analyzeLlmsTxt(
+  llmsTxt: string | null,
+  siteData: SiteData,
+  understanding: Understanding
+): LlmsTxtAnalysis {
+  if (!llmsTxt) {
+    return { present: false, aligned: null, modifier: 0, notes: ['No llms.txt found (neutral)'] };
+  }
+
+  const notes: string[] = ['llms.txt found'];
+  let alignmentScore = 0;
+  let checks = 0;
+
+  const llmsLower = llmsTxt.toLowerCase();
+  const siteName = siteData.homepage?.meta?.title?.toLowerCase() || '';
+
+  // Check 1: Does llms.txt mention the product name?
+  if (siteName && llmsLower.includes(siteName.split(' ')[0])) {
+    alignmentScore++;
+    notes.push('Product name matches');
+  }
+  checks++;
+
+  // Check 2: Does it align with category?
+  const category = understanding.category?.toLowerCase() || '';
+  if (category && llmsLower.includes(category.split(' ')[0])) {
+    alignmentScore++;
+    notes.push('Category aligns');
+  }
+  checks++;
+
+  // Check 3: Is it concise and structured? (good llms.txt is usually <2000 chars)
+  if (llmsTxt.length < 2000 && llmsTxt.includes('#')) {
+    alignmentScore++;
+    notes.push('Well-structured format');
+  } else if (llmsTxt.length > 5000) {
+    notes.push('llms.txt may be too verbose');
+  }
+  checks++;
+
+  // Check 4: Does it avoid marketing fluff?
+  const fluffWords = ['revolutionary', 'best-in-class', 'world-class', 'cutting-edge', 'game-changing'];
+  const hasFluff = fluffWords.some(w => llmsLower.includes(w));
+  if (!hasFluff) {
+    alignmentScore++;
+    notes.push('No marketing fluff detected');
+  } else {
+    notes.push('Contains marketing language (reduces trust)');
+  }
+  checks++;
+
+  const alignmentRatio = alignmentScore / checks;
+  const aligned = alignmentRatio >= 0.5;
+
+  // Modifier: +3 to +5 if aligned, -5 if misaligned
+  let modifier = 0;
+  if (aligned) {
+    modifier = Math.round(3 + alignmentRatio * 2); // +3 to +5
+    notes.push(`Alignment bonus: +${modifier}%`);
+  } else {
+    modifier = -5;
+    notes.push('Misalignment penalty: -5%');
+  }
+
+  return { present: true, aligned, modifier, notes };
+}
+
+function calculateScores(blockers: Blocker[], llmsTxtModifier: number = 0): Scores {
   const pillarWeights = {
-    clarity: 30,
-    specificity: 30,
+    clarity: 25,
+    specificity: 35,
     proof: 25,
     audience: 15,
   };
@@ -899,6 +1302,9 @@ function calculateScores(blockers: Blocker[]): Scores {
   for (const [pillar, weight] of Object.entries(pillarWeights)) {
     totalScore += (pillarScores[pillar] * weight) / 100;
   }
+
+  // Apply llms.txt modifier
+  totalScore = Math.max(0, Math.min(100, totalScore + llmsTxtModifier));
 
   return {
     total: Math.round(totalScore),
