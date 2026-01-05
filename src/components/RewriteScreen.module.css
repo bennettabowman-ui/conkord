@@ -1,0 +1,259 @@
+.screen {
+  background: var(--bg-primary);
+  min-height: 100vh;
+  animation: fadeIn 0.4s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.header {
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 20px 0;
+}
+
+.headerInner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.btnBack {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btnBack:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.titleSection {
+  flex: 1;
+}
+
+.label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.title {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.body {
+  padding: 40px 0;
+}
+
+.intro {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  margin-bottom: 32px;
+  max-width: 1200px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.intro h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.intro p {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  color: var(--text-muted);
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border-subtle);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 16px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.patchesList {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 1200px;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 0 24px;
+}
+
+.patchCard {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.patchHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.patchLocation {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.patchPage {
+  font-size: 13px;
+  color: var(--accent-info);
+}
+
+.patchSection {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.patchType {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: var(--accent-primary-dim);
+  color: var(--accent-primary);
+}
+
+.patchDiff {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.diffSide {
+  padding: 20px;
+}
+
+.diffSide.before {
+  background: var(--accent-danger-dim);
+  border-right: 1px solid var(--border-subtle);
+}
+
+.diffSide.after {
+  background: var(--accent-primary-dim);
+}
+
+.diffLabel {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.diffSide.before .diffLabel {
+  color: var(--accent-danger);
+}
+
+.diffSide.after .diffLabel {
+  color: var(--accent-primary);
+}
+
+.diffContent {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+}
+
+.noContent {
+  color: var(--text-muted);
+}
+
+.patchFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.patchRationale {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.btnCopy {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-medium);
+  color: var(--text-primary);
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--font-body);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all var(--transition-fast);
+}
+
+.btnCopy:hover {
+  background: var(--bg-elevated);
+}
+
+.btnCopy.copied {
+  background: var(--accent-primary-dim);
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+@media (max-width: 900px) {
+  .patchDiff {
+    grid-template-columns: 1fr;
+  }
+
+  .diffSide.before {
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+}
