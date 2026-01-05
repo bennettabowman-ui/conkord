@@ -127,12 +127,12 @@ async function crawlSite(baseUrl: string) {
     return { success: false, error: homepageResult.error, pages: [] };
   }
 
-  results.push({ url: origin, type: 'homepage', html: homepageResult.html });
+  results.push({ url: origin, type: 'homepage', html: homepageResult.html! });
   crawled.add(origin);
   crawled.add(origin + '/');
 
   // Extract links from homepage
-  const $ = cheerio.load(homepageResult.html);
+  const $ = cheerio.load(homepageResult.html!);
   const discoveredLinks = new Set<string>();
 
   $('a[href]').each((_, el) => {
@@ -164,7 +164,7 @@ async function crawlSite(baseUrl: string) {
       results.push({
         url: pageUrl,
         type: detectPageType(path),
-        html: pageResult.html,
+        html: pageResult.html!,
       });
       crawled.add(pageUrl);
     }
