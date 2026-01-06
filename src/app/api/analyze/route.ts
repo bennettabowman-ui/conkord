@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import * as cheerio from 'cheerio';
+import { saveAnalysisToDb, checkUserCanScan } from '@/lib/db-helpers';
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
@@ -26,10 +27,18 @@ function createStreamResponse() {
 }
 
 export async function POST(request: NextRequest) {
-  const { url } = await request.json();
+  const { url, email } = await request.json();
 
   if (!url) {
     return Response.json({ error: 'URL is required' }, { status: 400 });
+  }
+
+  // Check if user can scan (enforces free tier limit)
+  if (email) {
+    const canScan = await checkUserCanScan(email);
+    if (!canScan.allowed) {
+      return Response.json({ error: canScan.reason || 'Scan limit reached' }, { status: 403 });
+    }
   }
 
   const { stream, send, close } = createStreamResponse();
@@ -96,6 +105,17 @@ export async function POST(request: NextRequest) {
         strengths,
         llmsTxt: llmsTxtAnalysis,
       };
+
+      // Save to database (fire and forget - don't block the response)
+      if (email && crawlResult.origin) {
+        saveAnalysisToDb(email, crawlResult.origin, {
+          overallScore: scores.total,
+          pillarScores: scores.pillars,
+          blockers,
+          strengths,
+          aiUnderstanding: understanding,
+        }).catch(err => console.error('Failed to save analysis:', err));
+      }
 
       send({ type: 'complete', result });
       close();

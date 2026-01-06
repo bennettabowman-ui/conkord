@@ -5,9 +5,10 @@ import styles from './LandingScreen.module.css';
 
 interface LandingScreenProps {
   onAnalyze: (url: string, email: string) => void;
+  onViewPastScans?: (email: string) => void;
 }
 
-export default function LandingScreen({ onAnalyze }: LandingScreenProps) {
+export default function LandingScreen({ onAnalyze, onViewPastScans }: LandingScreenProps) {
   const [url, setUrl] = useState('');
   const [email, setEmail] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -70,6 +71,16 @@ export default function LandingScreen({ onAnalyze }: LandingScreenProps) {
         </form>
 
         <p className={styles.freeNote}>First scan is free. No credit card required.</p>
+
+        {onViewPastScans && isValidEmail && (
+          <button
+            type="button"
+            className={styles.pastScansLink}
+            onClick={() => onViewPastScans(email)}
+          >
+            View your past scans
+          </button>
+        )}
 
         <div className={styles.features}>
           <div className={styles.feature}>

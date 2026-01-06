@@ -197,3 +197,22 @@
     flex-direction: column;
   }
 }
+
+
+.pastScansLink {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 8px 16px;
+  margin-top: 8px;
+  transition: color 0.2s ease;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.pastScansLink:hover {
+  color: var(--accent-primary);
+}
+

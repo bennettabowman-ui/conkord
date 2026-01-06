@@ -5,6 +5,7 @@ import LandingScreen from '@/components/LandingScreen';
 import AnalyzingScreen from '@/components/AnalyzingScreen';
 import DashboardScreen from '@/components/DashboardScreen';
 import RewriteScreen from '@/components/RewriteScreen';
+import PastScansScreen from '@/components/PastScansScreen';
 
 export interface UserState {
   email: string;
@@ -73,7 +74,7 @@ export interface AnalysisStep {
   status: 'pending' | 'active' | 'done';
 }
 
-type Screen = 'landing' | 'analyzing' | 'dashboard' | 'rewrite';
+type Screen = 'landing' | 'analyzing' | 'dashboard' | 'rewrite' | 'pastScans';
 
 export default function Home() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('landing');
@@ -116,7 +117,7 @@ export default function Home() {
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: inputUrl }),
+        body: JSON.stringify({ url: inputUrl, email: userEmail }),
       });
 
       // Create a reader for the streaming response
@@ -184,10 +185,50 @@ export default function Home() {
     setSelectedBlocker(null);
   };
 
+  const showPastScans = (userEmail: string) => {
+    setEmail(userEmail);
+    setCurrentScreen('pastScans');
+  };
+
+  const viewPastAnalysis = async (analysisId: string) => {
+    try {
+      const response = await fetch(`/api/analyses/${analysisId}`);
+      const data = await response.json();
+      if (data && !data.error) {
+        setAnalysisResult({
+          success: true,
+          url: data.url,
+          analyzedAt: data.createdAt,
+          elapsedSeconds: 0,
+          pagesAnalyzed: 0,
+          scores: {
+            total: data.overallScore,
+            pillars: data.pillarScores,
+          },
+          understanding: data.aiUnderstanding || {
+            oneLiner: '',
+            category: '',
+            audience: '',
+            useCases: [],
+            confusions: [],
+            missingForConfidence: [],
+            confidence: { score: 0, level: 'Unknown', reason: '' },
+          },
+          blockers: data.blockers || [],
+          strengths: data.strengths || [],
+        });
+        setUrl(data.url);
+        setCurrentScreen('dashboard');
+      }
+    } catch (err) {
+      console.error('Error loading analysis:', err);
+    }
+  };
+
   return (
     <main>
       {currentScreen === 'landing' && (
-        <LandingScreen onAnalyze={startAnalysis} />
+        <LandingScreen onAnalyze={startAnalysis} onViewPastScans={showPastScans} />
       )}
       {currentScreen === 'analyzing' && (
         <AnalyzingScreen url={url} steps={steps} error={error} />
@@ -210,6 +251,13 @@ export default function Home() {
             audience: analysisResult.understanding.audience,
           }}
           onBack={showDashboard}
+        />
+      )}
+      {currentScreen === 'pastScans' && email && (
+        <PastScansScreen
+          email={email}
+          onBack={showLanding}
+          onViewAnalysis={viewPastAnalysis}
         />
       )}
     </main>
